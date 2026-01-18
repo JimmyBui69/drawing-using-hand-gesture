@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Hand Gesture Drawing – Hold Fist 2s</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<style>
+html,body{
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  background:black;
+}
+canvas{
+  position:absolute;
+  top:0;
+  left:0;
+}
+#hint{
+  position:fixed;
+  top:10px;
+  width:100%;
+  text-align:center;
+  color:white;
+  font-size:18px;
+  font-family:Arial;
+  z-index:10;
+}
+video{display:none;}
+</style>
+</head>
+
+<body>
+
+<div id="hint">
+🤏 Pinch = Vẽ | 🖐 Open = Thả bút | ✊ Giữ Fist 2s = Xóa
+</div>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="videoCanvas"></canvas>
+<canvas id="drawCanvas"></canvas>
+
+<script>
+/* ===== CONFIG ===== */
+const CONFIG = {
+  FIST_THRESHOLD: 0.22,
+  PINCH_THRESHOLD: 0.05,
+  FIST_HOLD_TIME: 2000,
+  PEN_RADIUS: 8,
+  PROGRESS_RADIUS: 18,
+  PROGRESS_WIDTH: 6,
+  DRAW_WIDTH: 6
+};
+
+const LANDMARKS = {
+  WRIST: 0,
+  THUMB: 4,
+  INDEX: 8,
+  MIDDLE: 12,
+  RING: 16,
+  PINKY: 20
+};
+
+/* ===== SETUP ===== */
+const video = document.getElementById("video");
+const videoCanvas = document.getElementById("videoCanvas");
+const vCtx = videoCanvas.getContext("2d");
+const drawCanvas = document.getElementById("drawCanvas");
+const dCtx = drawCanvas.getContext("2d");
+
+function resizeCanvases() {
+  videoCanvas.width = drawCanvas.width = innerWidth;
+  videoCanvas.height = drawCanvas.height = innerHeight;
+  dCtx.strokeStyle = "black";
+  dCtx.lineWidth = CONFIG.DRAW_WIDTH;
+  dCtx.lineCap = "round";
+}
+resizeCanvases();
+window.addEventListener("resize", resizeCanvases);
+
+/* ===== CAMERA ===== */
+const camera = new Camera(video,{
+  onFrame: async()=>{ await hands.send({image: video}); },
+  width:1280,
+  height:720
+});
+camera.start().catch(err => {
+  console.error("Camera failed:", err);
+  alert("Unable to access camera");
+});
+
+/* ===== HANDS ===== */
+const hands = new Hands({
+  locateFile:file =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({
+  maxNumHands:1,
+  modelComplexity:1,
+  minDetectionConfidence:0.6,
+  minTrackingConfidence:0.6
+});
+
+/* ===== UTILS ===== */
+function dist(a,b){
+  return Math.hypot(a.x-b.x, a.y-b.y);
+}
+
+/* ===== GESTURE ===== */
+let drawing=false;
+let lastX=null, lastY=null;
+let fistStartTime = null;
+let fistCleared = false;
+
+function detectGesture(lm){
+  const fingerDist =
+    (dist(lm[LANDMARKS.INDEX],lm[LANDMARKS.WRIST])+
+     dist(lm[LANDMARKS.MIDDLE],lm[LANDMARKS.WRIST])+
+     dist(lm[LANDMARKS.RING],lm[LANDMARKS.WRIST])+
+     dist(lm[LANDMARKS.PINKY],lm[LANDMARKS.WRIST]))/4;
+
+  const pinch = dist(lm[LANDMARKS.THUMB],lm[LANDMARKS.INDEX]);
+
+  if(fingerDist < CONFIG.FIST_THRESHOLD) return "FIST";
+  if(pinch < CONFIG.PINCH_THRESHOLD) return "PINCH";
+  return "OPEN";
+}
+
+function resetFistState() {
+  fistStartTime=null;
+  fistCleared=false;
+}
+
+/* ===== MAIN LOOP ===== */
+hands.onResults(res=>{
+  // clear video canvas
+  vCtx.clearRect(0,0,videoCanvas.width,videoCanvas.height);
+
+  // mirror video
+  vCtx.save();
+  vCtx.scale(-1,1);
+  vCtx.drawImage(video,-videoCanvas.width,0,
+                 videoCanvas.width,videoCanvas.height);
+  vCtx.restore();
+
+  if(!res.multiHandLandmarks.length){
+    drawing=false;
+    lastX=lastY=null;
+    resetFistState();
+    return;
+  }
+
+  const lm = res.multiHandLandmarks[0];
+  const gesture = detectGesture(lm);
+
+  // mirror landmark X
+  const x = (1 - lm[LANDMARKS.INDEX].x) * videoCanvas.width;
+  const y = lm[LANDMARKS.INDEX].y * videoCanvas.height;
+
+  /* === DRAW PEN TIP === */
+  vCtx.fillStyle="red";
+  vCtx.beginPath();
+  vCtx.arc(x,y,CONFIG.PEN_RADIUS,0,Math.PI*2);
+  vCtx.fill();
+
+  /* === DRAW LINE === */
+  if(gesture==="PINCH"){
+    if(!drawing){
+      drawing=true;
+      lastX=x;
+      lastY=y;
+    }
+    dCtx.beginPath();
+    dCtx.moveTo(lastX,lastY);
+    dCtx.lineTo(x,y);
+    dCtx.stroke();
+    lastX=x;
+    lastY=y;
+  }
+
+  if(gesture==="OPEN"){
+    drawing=false;
+    lastX=lastY=null;
+  }
+
+  /* === HOLD FIST 2s TO CLEAR === */
+  if(gesture==="FIST"){
+    if(fistStartTime===null){
+      fistStartTime=Date.now();
+      fistCleared=false;
+    }
+
+    const elapsed = Date.now() - fistStartTime;
+    const progress = Math.min(elapsed / CONFIG.FIST_HOLD_TIME, 1);
+
+    // progress circle
+    vCtx.strokeStyle="yellow";
+    vCtx.lineWidth=CONFIG.PROGRESS_WIDTH;
+    vCtx.beginPath();
+    vCtx.arc(x,y,CONFIG.PROGRESS_RADIUS,
+      -Math.PI/2,
+      -Math.PI/2 + progress * Math.PI*2
+    );
+    vCtx.stroke();
+
+    if(elapsed>=CONFIG.FIST_HOLD_TIME && !fistCleared){
+      dCtx.clearRect(0,0,drawCanvas.width,drawCanvas.height);
+      fistCleared=true;
+    }
+  } else {
+    resetFistState();
+  }
+});
+</script>
+
+</body>
+</html>
